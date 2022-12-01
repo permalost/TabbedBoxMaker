@@ -66,19 +66,147 @@ import inkex
 import gettext
 from typing import List
 from copy import deepcopy
+from enum import Enum
 _ = gettext.gettext
 
 DEFAULT_THICKNESS = 1 # default unless overridden by settings
 
+class Symmetry(Enum):
+    """Symmetry choices."""
+
+    ROTATIONAL = 1
+    ANTISYMMETRIC = 2
+    XY = 3
+
+class Layout(Enum):
+    """Layout choices."""
+
+    DIAGRAMATIC = 1
+    THREE_PIECE = 2
+    INLINE = 3
+
+class BoxType(Enum):
+    """Box types."""
+
+    FULL = 1
+    LIDLESS = 2
+    TRAY = 3
+    BACK_LEFT_CORNER = 4
+    SQUARE_EXTRUSION = 5
+    BASE_LEFT = 6
+
 class Side:
     """A class to pass information about a side of the box."""
 
-    def __init__(self) -> None:
+    def __init__(self, face) -> None:
         """Initialize instance variables."""
-        self.is_present = False
+        self.is_present = True
         self.tab_info = 0b0000
         self.tabbed = False
-        self.face = 0
+        self.face = face
+
+class Box:
+    """Box for stuff."""
+
+    top = Side(1)
+    base = Side(1)
+    front = Side(2)
+    back = Side(2)
+    left = Side(3)
+    right = Side(3)
+
+    def __init__(self, box_type: int, tab_symmetry: int) -> None:
+        """Prepare box with type and symmetry."""
+
+        # Mark missing sides based on type
+        if   box_type==BoxType.LIDLESS.value:
+            self.top.is_present=False
+        elif box_type==BoxType.TRAY.value:
+            self.top.is_present=False
+            self.front.is_present=False
+        elif box_type==BoxType.BACK_LEFT_CORNER.value:
+            self.top.is_present=False
+            self.front.is_present=False
+            self.right.is_present=False
+        elif box_type==BoxType.SQUARE_EXTRUSION.value:
+            self.top.is_present=False
+            self.base.is_present=False
+        elif box_type==BoxType.BASE_LEFT.value:
+            self.top.is_present=False
+            self.front.is_present=False
+            self.back.is_present=False
+            self.right.is_present=False
+
+        # Determine where the tabs go based on the tab style
+        if tab_symmetry==Symmetry.ANTISYMMETRIC.value:
+            self.top.tab_info=  0b0110
+            self.base.tab_info= 0b1100
+            self.left.tab_info= 0b1100
+            self.right.tab_info=0b0110
+            self.front.tab_info=0b1100
+            self.back.tab_info= 0b1001
+        elif tab_symmetry==Symmetry.ROTATIONAL.value:
+            self.top.tab_info=  0b1111
+            self.base.tab_info= 0b1111
+            self.left.tab_info= 0b1111
+            self.right.tab_info=0b1111
+            self.front.tab_info=0b1111
+            self.back.tab_info= 0b1111
+        elif tab_symmetry==Symmetry.XY.value:
+            self.top.tab_info=  0b0000
+            self.base.tab_info= 0b0000
+            self.left.tab_info= 0b1111
+            self.right.tab_info=0b1111
+            self.front.tab_info=0b1010
+            self.back.tab_info= 0b1010
+
+def reduce_offsets(aa, start, dx, dy, dz):
+    """Adjust stuff by reducing amount provided."""
+    for ix in range(start+1,len(aa)):
+        (s,x,y,z) = aa[ix]
+        aa[ix] = (s-1, x-dx, y-dy, z-dz)
+
+def setup_diagramatic_layout(box: Box, cc: List, rr: List, X: float, Y: float, Z: float) -> List:
+    """Arrange pieces in a diagram."""
+    pieces=[]
+    if not box.front.is_present: reduce_offsets(rr, 0, 0, 0, 1)     # remove row0, shift others up by Z
+    if not box.left.is_present:  reduce_offsets(cc, 0, 0, 0, 1)
+    if not box.right.is_present: reduce_offsets(cc, 2, 0, 0, 1)
+    if box.back.is_present: pieces.append([cc[1], rr[2], X,Z, box.back.tab_info,  box.back.tabbed,  box.back.face])
+    if box.left.is_present: pieces.append([cc[0], rr[1], Z,Y, box.left.tab_info,  box.left.tabbed,  box.left.face])
+    if box.base.is_present: pieces.append([cc[1], rr[1], X,Y, box.base.tab_info,  box.base.tabbed,  box.base.face])
+    if box.right.is_present:pieces.append([cc[2], rr[1], Z,Y, box.right.tab_info, box.right.tabbed, box.right.face])
+    if box.top.is_present:  pieces.append([cc[3], rr[1], X,Y, box.top.tab_info,   box.top.tabbed,   box.top.face])
+    if box.front.is_present:pieces.append([cc[1], rr[0], X,Z, box.front.tab_info, box.front.tabbed, box.front.face])
+    return pieces
+
+def setup_3_piece_layout(box: Box, cc: List, rr: List, X: float, Y: float, Z: float) -> List:
+    """Arrange up to 3 pieces.
+
+    This creates an SVG with the fewest pieces. It takes advantage that opposing sides are mirror
+    images of each other so printing a whole box just means cutting this file twice.
+    """
+    pieces=[]
+    if box.back.is_present: pieces.append([cc[1], rr[1], X,Z, box.back.tab_info, box.back.tabbed, box.back.face])
+    if box.left.is_present: pieces.append([cc[0], rr[0], Z,Y, box.left.tab_info, box.left.tabbed, box.left.face])
+    if box.base.is_present: pieces.append([cc[1], rr[0], X,Y, box.base.tab_info, box.base.tabbed, box.base.face])
+    return pieces
+
+def setup_inline_layout(box: Box, cc: List, rr: List, X: float, Y: float, Z: float) -> List:
+    """Arrange pieces in a compact layout."""
+    pieces=[]
+    if not box.top.is_present:     reduce_offsets(cc, 0, 1, 0, 0)  # remove col0, shift others left by X
+    if not box.base.is_present:    reduce_offsets(cc, 1, 1, 0, 0)
+    if not box.left.is_present:    reduce_offsets(cc, 2, 0, 0, 1)
+    if not box.right.is_present:   reduce_offsets(cc, 3, 0, 0, 1)
+    if not box.back.is_present:    reduce_offsets(cc, 4, 1, 0, 0)
+    if box.back.is_present: pieces.append([cc[4], rr[0], X,Z, box.back.tab_info,  box.back.tabbed,  box.back.face])
+    if box.left.is_present: pieces.append([cc[2], rr[0], Z,Y, box.left.tab_info,  box.left.tabbed,  box.left.face])
+    if box.top.is_present:  pieces.append([cc[0], rr[0], X,Y, box.top.tab_info,   box.top.tabbed,   box.top.face])
+    if box.base.is_present: pieces.append([cc[1], rr[0], X,Y, box.base.tab_info,  box.base.tabbed,  box.base.face])
+    if box.right.is_present:pieces.append([cc[3], rr[0], Z,Y, box.right.tab_info, box.right.tabbed, box.right.face])
+    if box.front.is_present:pieces.append([cc[5], rr[0], X,Z, box.front.tab_info, box.front.tabbed, box.front.face])
+    return pieces
 
 def log(text):
     """Adding line to SCHROFF_LOG."""
@@ -136,7 +264,7 @@ def dimple_str(tab_vector,vector_x,vector_y,dir_x,dir_y,dir_xn,dir_yn,ddir,is_ta
         ds+='L '+str(Vxd)+','+str(Vyd)+' '
     return ds
 
-def side_setup(group,root,start_offset,end_offset,tab_vec,length,direction,is_tab,is_divider,num_dividers,divider_spacing):
+def side_setup(side_group,root,start_offset,end_offset,tab_vec,length,direction,is_tab,is_divider,num_dividers,divider_spacing):
     """Side things."""
     root_x, root_y = root
     start_offset_x, start_offset_y = start_offset
@@ -237,7 +365,7 @@ def side_setup(group,root,start_offset,end_offset,tab_vec,length,direction,is_ta
                 Dx=Dx-notdir_x*(second_vec-kerf)
                 Dy=Dy-notdir_y*(second_vec+kerf)
                 h+='L '+str(Dx)+','+str(Dy)+' '
-                group.add(get_line(h)) 
+                side_group.add(get_line(h)) 
         if tab_division%2:
             if tab_division==1 and num_dividers>0 and is_divider:
                 # draw slots for dividers to slot into each other
@@ -257,7 +385,7 @@ def side_setup(group,root,start_offset,end_offset,tab_vec,length,direction,is_ta
                     Dx=Dx-notdir_x*(thickness-kerf)
                     Dy=Dy-notdir_y*(thickness-kerf)
                     h+='L '+str(Dx)+','+str(Dy)+' '
-                    group.add(get_line(h))
+                    side_group.add(get_line(h))
             # draw the gap
             vector_x+=dir_x*(gap_width+(is_tab&dogbone&1 ^ 0x1)*first+dogbone*kerf*is_tab)+notdir_x*first_vec
             vector_y+=dir_y*(gap_width+(is_tab&dogbone&1 ^ 0x1)*first+dogbone*kerf*is_tab)+notdir_y*first_vec
@@ -317,63 +445,15 @@ def side_setup(group,root,start_offset,end_offset,tab_vec,length,direction,is_ta
             Dx=Dx-notdir_x*(thickness-kerf)
             Dy=Dy-notdir_y*(thickness-kerf)
             h+='L '+str(Dx)+','+str(Dy)+' '
-            group.add(get_line(h))
-    group.add(get_line(s))
+            side_group.add(get_line(h))
+    side_group.add(get_line(s))
     return s
 
-def reduce_offsets(aa, start, dx, dy, dz):
-    """Adjust stuff by reducing amount provided."""
-    for ix in range(start+1,len(aa)):
-        (s,x,y,z) = aa[ix]
-        aa[ix] = (s-1, x-dx, y-dy, z-dz)
-
-def setup_diagramatic_layout(cc: List, rr: List, X: float, Y: float, Z: float, top: Side, base: Side, left: Side, right: Side, front: Side, back: Side) -> List:
-    """Arrange pieces in a diagram."""
-    pieces=[]
-    if not front.is_present: reduce_offsets(rr, 0, 0, 0, 1)     # remove row0, shift others up by Z
-    if not left.is_present:  reduce_offsets(cc, 0, 0, 0, 1)
-    if not right.is_present: reduce_offsets(cc, 2, 0, 0, 1)
-    if back.is_present: pieces.append([cc[1], rr[2], X,Z, back.tab_info,  back.tabbed,  back.face])
-    if left.is_present: pieces.append([cc[0], rr[1], Z,Y, left.tab_info,  left.tabbed,  left.face])
-    if base.is_present: pieces.append([cc[1], rr[1], X,Y, base.tab_info,  base.tabbed,  base.face])
-    if right.is_present:pieces.append([cc[2], rr[1], Z,Y, right.tab_info, right.tabbed, right.face])
-    if top.is_present:  pieces.append([cc[3], rr[1], X,Y, top.tab_info,   top.tabbed,   top.face])
-    if front.is_present:pieces.append([cc[1], rr[0], X,Z, front.tab_info, front.tabbed, front.face])
-    return pieces
-
-def setup_3_piece_layout(cc: List, rr: List, X: float, Y: float, Z: float, top: Side, base: Side, left: Side, right: Side, front: Side, back: Side) -> List:
-    """Arrange up to 3 pieces.
-
-    This creates an SVG with the fewest pieces. It takes advantage that opposing sides are mirror
-    images of each other so printing a whole box just means cutting this file twice.
-    """
-    pieces=[]
-    if back.is_present: pieces.append([cc[1], rr[1], X,Z, back.tab_info, back.tabbed, back.face])
-    if left.is_present: pieces.append([cc[0], rr[0], Z,Y, left.tab_info, left.tabbed, left.face])
-    if base.is_present: pieces.append([cc[1], rr[0], X,Y, base.tab_info, base.tabbed, base.face])
-    return pieces
-
-def setup_inline_layout(cc: List, rr: List, X: float, Y: float, Z: float, top: Side, base: Side, left: Side, right: Side, front: Side, back: Side) -> List:
-    """Arrange pieces in a compact layout."""
-    pieces=[]
-    if not top.is_present:     reduce_offsets(cc, 0, 1, 0, 0)  # remove col0, shift others left by X
-    if not base.is_present:    reduce_offsets(cc, 1, 1, 0, 0)
-    if not left.is_present:    reduce_offsets(cc, 2, 0, 0, 1)
-    if not right.is_present:   reduce_offsets(cc, 3, 0, 0, 1)
-    if not back.is_present:    reduce_offsets(cc, 4, 1, 0, 0)
-    if back.is_present: pieces.append([cc[4], rr[0], X,Z, back.tab_info,  back.tabbed,  back.face])
-    if left.is_present: pieces.append([cc[2], rr[0], Z,Y, left.tab_info,  left.tabbed,  left.face])
-    if top.is_present:  pieces.append([cc[0], rr[0], X,Y, top.tab_info,   top.tabbed,   top.face])
-    if base.is_present: pieces.append([cc[1], rr[0], X,Y, base.tab_info,  base.tabbed,  base.face])
-    if right.is_present:pieces.append([cc[3], rr[0], Z,Y, right.tab_info, right.tabbed, right.face])
-    if front.is_present:pieces.append([cc[5], rr[0], X,Z, front.tab_info, front.tabbed, front.face])
-    return pieces
-
-class BoxMaker(inkex.Effect):
+class BoxMaker(inkex.extensions.GenerateExtension):
     """Make SVG for tabbed joint boxes."""
     def __init__(self):
         # Call the base cl  ass constructor.
-        inkex.Effect.__init__(self)
+        inkex.extensions.GenerateExtension.__init__(self)
         # Define options
         self.arg_parser.add_argument('--schroff',action='store',type=int,
             dest='schroff',default=0,help='Enable Schroff mode')
@@ -431,6 +511,7 @@ class BoxMaker(inkex.Effect):
             dest='div_w',default=25,help='Dividers (Width axis)')
         self.arg_parser.add_argument('--keydiv',action='store',type=int,
             dest='keydiv',default=3,help='Key dividers into walls/floor')
+        self.add_arguments(self.arg_parser)
 
     def effect(self):
         global group,nom_tab,equalTabs,tab_symmetry,dimpleheight,dimpleLength,thickness,kerf,halfkerf,dogbone,divx,divy,hairline,DEFAULT_THICKNESS,keydivwalls,keydivfloor
@@ -443,12 +524,12 @@ class BoxMaker(inkex.Effect):
         heightDoc = self.svg.unittouu(svg.get('height'))
 
         # Get script's option values.
-        hairline=self.options.hairline
-        unit=self.options.unit
-        inside=self.options.inside
-        schroff=self.options.schroff
-        kerf = self.svg.unittouu( str(self.options.kerf)  + unit )
-        halfkerf=kerf/2
+        hairline = self.options.hairline
+        unit =     self.options.unit
+        inside =   self.options.inside
+        schroff =  self.options.schroff
+        kerf =     self.svg.unittouu( str(self.options.kerf)  + unit )
+        halfkerf = kerf/2
 
         # Set the line thickness
         if hairline:
@@ -457,13 +538,13 @@ class BoxMaker(inkex.Effect):
             DEFAULT_THICKNESS=1
 
         if schroff:
-            rows=self.options.rows
-            rail_height=self.svg.unittouu(str(self.options.rail_height)+unit)
-            row_centre_spacing=self.svg.unittouu(str(122.5)+unit)
-            row_spacing=self.svg.unittouu(str(self.options.row_spacing)+unit)
-            rail_mount_depth=self.svg.unittouu(str(self.options.rail_mount_depth)+unit)
-            rail_mount_centre_offset=self.svg.unittouu(str(self.options.rail_mount_centre_offset)+unit)
-            rail_mount_radius=self.svg.unittouu(str(2.5)+unit)
+            rows =                     self.options.rows
+            rail_height =              self.svg.unittouu(str(self.options.rail_height)+unit)
+            row_centre_spacing =       self.svg.unittouu(str(122.5)+unit)
+            row_spacing =              self.svg.unittouu(str(self.options.row_spacing)+unit)
+            rail_mount_depth =         self.svg.unittouu(str(self.options.rail_mount_depth)+unit)
+            rail_mount_centre_offset = self.svg.unittouu(str(self.options.rail_mount_centre_offset)+unit)
+            rail_mount_radius =        self.svg.unittouu(str(2.5)+unit)
 
         ## minimally different behaviour for schroffmaker.inx vs. boxmaker.inx
         ## essentially schroffmaker.inx is just an alternate interface with different
@@ -478,11 +559,11 @@ class BoxMaker(inkex.Effect):
             Y = row_height + row_spacing_total
         else:
             ## boxmaker.inx
-            X = self.svg.unittouu( str(self.options.length + kerf)  + unit )
+            X = self.svg.unittouu( str(self.options.length + kerf) + unit )
             Y = self.svg.unittouu( str(self.options.width + kerf) + unit )
 
-        Z = self.svg.unittouu( str(self.options.height + kerf)  + unit )
-        thickness = self.svg.unittouu( str(self.options.thickness)  + unit )
+        Z = self.svg.unittouu( str(self.options.height + kerf) + unit )
+        thickness = self.svg.unittouu( str(self.options.thickness) + unit )
         nom_tab = self.svg.unittouu( str(self.options.tab) + unit )
         equalTabs=self.options.equal
         tab_symmetry=self.options.tabsymmetry
@@ -490,7 +571,7 @@ class BoxMaker(inkex.Effect):
         dimpleLength=self.options.dimplelength
         dogbone = 1 if self.options.tabtype == 1 else 0
         layout=self.options.style
-        spacing = self.svg.unittouu( str(self.options.spacing)  + unit )
+        spacing = self.svg.unittouu( str(self.options.spacing) + unit )
         boxtype = self.options.boxtype
         divx = self.options.div_l
         divy = self.options.div_w
@@ -539,46 +620,7 @@ class BoxMaker(inkex.Effect):
 
         if error: exit()
 
-        # For code spacing consistency, we use two-character abbreviations for the six box faces,
-        # where each abbreviation is the first and last letter of the face name:
-        # tp=top, bm=bottom, ft=front, bk=back, lt=left, rt=right
-        top = Side()
-        base = Side()
-        front = Side()
-        back = Side()
-        left = Side()
-        right = Side()
-        # Determine which faces the box has based on the box type
-        top.is_present=base.is_present=front.is_present=back.is_present=left.is_present=right.is_present = True
-        if   boxtype==2: top.is_present=False
-        elif boxtype==3: top.is_present=front.is_present=False
-        elif boxtype==4: top.is_present=front.is_present=right.is_present=False
-        elif boxtype==5: top.is_present=base.is_present=False
-        elif boxtype==6: top.is_present=front.is_present=back.is_present=right.is_present=False
-        # else boxtype==1, full box, has all sides
-
-        # Determine where the tabs go based on the tab style
-        if tab_symmetry==2:     # Antisymmetric (deprecated)
-            top.tab_info=  0b0110
-            base.tab_info= 0b1100
-            left.tab_info= 0b1100
-            right.tab_info=0b0110
-            front.tab_info=0b1100
-            back.tab_info= 0b1001
-        elif tab_symmetry==1:   # Rotationally symmetric (Waffle-blocks)
-            top.tab_info=  0b1111
-            base.tab_info= 0b1111
-            left.tab_info= 0b1111
-            right.tab_info=0b1111
-            front.tab_info=0b1111
-            back.tab_info= 0b1111
-        else:               # XY symmetric
-            top.tab_info=  0b0000
-            base.tab_info= 0b0000
-            left.tab_info= 0b1111
-            right.tab_info=0b1111
-            front.tab_info=0b1010
-            back.tab_info= 0b1010
+        box = Box(boxtype, tab_symmetry)
 
         def fixTabBits(tabbed, tabInfo, bit):
             newTabbed = tabbed & ~bit
@@ -589,43 +631,43 @@ class BoxMaker(inkex.Effect):
             return newTabbed, newTabInfo
 
         # Update the tab bits based on which sides of the box don't exist
-        top.tabbed=base.tabbed=left.tabbed=right.tabbed=front.tabbed=back.tabbed=0b1111
-        if not top.is_present:
-            back.tabbed, back.tab_info = fixTabBits(back.tabbed, back.tab_info, 0b0010)
-            front.tabbed, front.tab_info = fixTabBits(front.tabbed, front.tab_info, 0b1000)
-            left.tabbed, left.tab_info = fixTabBits(left.tabbed, left.tab_info, 0b0001)
-            right.tabbed, right.tab_info = fixTabBits(right.tabbed, right.tab_info, 0b0100)
-            top.tabbed=0
-        if not base.is_present:
-            back.tabbed, back.tab_info = fixTabBits(back.tabbed, back.tab_info, 0b1000)
-            front.tabbed, front.tab_info = fixTabBits(front.tabbed, front.tab_info, 0b0010)
-            left.tabbed, left.tab_info = fixTabBits(left.tabbed, left.tab_info, 0b0100)
-            right.tabbed, right.tab_info = fixTabBits(right.tabbed, right.tab_info, 0b0001)
-            base.tabbed=0
-        if not front.is_present:
-            top.tabbed, top.tab_info = fixTabBits(top.tabbed, top.tab_info, 0b1000)
-            base.tabbed, base.tab_info = fixTabBits(base.tabbed, base.tab_info, 0b1000)
-            left.tabbed, left.tab_info = fixTabBits(left.tabbed, left.tab_info, 0b1000)
-            right.tabbed, right.tab_info = fixTabBits(right.tabbed, right.tab_info, 0b1000)
-            front.tabbed=0
-        if not back.is_present:
-            top.tabbed, top.tab_info = fixTabBits(top.tabbed, top.tab_info, 0b0010)
-            base.tabbed, base.tab_info = fixTabBits(base.tabbed, base.tab_info, 0b0010)
-            left.tabbed, left.tab_info = fixTabBits(left.tabbed, left.tab_info, 0b0010)
-            right.tabbed, right.tab_info = fixTabBits(right.tabbed, right.tab_info, 0b0010)
-            back.tabbed=0
-        if not left.is_present:
-            top.tabbed, top.tab_info = fixTabBits(top.tabbed, top.tab_info, 0b0100)
-            base.tabbed, base.tab_info = fixTabBits(base.tabbed, base.tab_info, 0b0001)
-            back.tabbed, back.tab_info = fixTabBits(back.tabbed, back.tab_info, 0b0001)
-            front.tabbed, front.tab_info = fixTabBits(front.tabbed, front.tab_info, 0b0001)
-            left.tabbed=0
-        if not right.is_present:
-            top.tabbed, top.tab_info = fixTabBits(top.tabbed, top.tab_info, 0b0001)
-            base.tabbed, base.tab_info = fixTabBits(base.tabbed, base.tab_info, 0b0100)
-            back.tabbed, back.tab_info = fixTabBits(back.tabbed, back.tab_info, 0b0100)
-            front.tabbed, front.tab_info = fixTabBits(front.tabbed, front.tab_info, 0b0100)
-            right.tabbed=0
+        box.top.tabbed=box.base.tabbed=box.left.tabbed=box.right.tabbed=box.front.tabbed=box.back.tabbed=0b1111
+        if not box.top.is_present:
+            box.back.tabbed, box.back.tab_info =   fixTabBits(box.back.tabbed, box.back.tab_info, 0b0010)
+            box.front.tabbed, box.front.tab_info = fixTabBits(box.front.tabbed, box.front.tab_info, 0b1000)
+            box.left.tabbed, box.left.tab_info =   fixTabBits(box.left.tabbed, box.left.tab_info, 0b0001)
+            box.right.tabbed, box.right.tab_info = fixTabBits(box.right.tabbed, box.right.tab_info, 0b0100)
+            box.top.tabbed=0
+        if not box.base.is_present:
+            box.back.tabbed, box.back.tab_info =   fixTabBits(box.back.tabbed, box.back.tab_info, 0b1000)
+            box.front.tabbed, box.front.tab_info = fixTabBits(box.front.tabbed, box.front.tab_info, 0b0010)
+            box.left.tabbed, box.left.tab_info =   fixTabBits(box.left.tabbed, box.left.tab_info, 0b0100)
+            box.right.tabbed, box.right.tab_info = fixTabBits(box.right.tabbed, box.right.tab_info, 0b0001)
+            box.base.tabbed=0
+        if not box.front.is_present:
+            box.top.tabbed, box.top.tab_info = fixTabBits(box.top.tabbed, box.top.tab_info, 0b1000)
+            box.base.tabbed, box.base.tab_info = fixTabBits(box.base.tabbed, box.base.tab_info, 0b1000)
+            box.left.tabbed, box.left.tab_info = fixTabBits(box.left.tabbed, box.left.tab_info, 0b1000)
+            box.right.tabbed, box.right.tab_info = fixTabBits(box.right.tabbed, box.right.tab_info, 0b1000)
+            box.front.tabbed=0
+        if not box.back.is_present:
+            box.top.tabbed, box.top.tab_info = fixTabBits(box.top.tabbed, box.top.tab_info, 0b0010)
+            box.base.tabbed, box.base.tab_info = fixTabBits(box.base.tabbed, box.base.tab_info, 0b0010)
+            box.left.tabbed, box.left.tab_info = fixTabBits(box.left.tabbed, box.left.tab_info, 0b0010)
+            box.right.tabbed, box.right.tab_info = fixTabBits(box.right.tabbed, box.right.tab_info, 0b0010)
+            box.back.tabbed=0
+        if not box.left.is_present:
+            box.top.tabbed, box.top.tab_info = fixTabBits(box.top.tabbed, box.top.tab_info, 0b0100)
+            box.base.tabbed, box.base.tab_info = fixTabBits(box.base.tabbed, box.base.tab_info, 0b0001)
+            box.back.tabbed, box.ack.tab_info = fixTabBits(box.back.tabbed, box.back.tab_info, 0b0001)
+            box.front.tabbed, box.front.tab_info = fixTabBits(box.front.tabbed, box.front.tab_info, 0b0001)
+            box.left.tabbed=0
+        if not box.right.is_present:
+            box.top.tabbed, box.top.tab_info = fixTabBits(box.top.tabbed, box.top.tab_info, 0b0001)
+            box.base.tabbed, box.base.tab_info = fixTabBits(box.base.tabbed, box.base.tab_info, 0b0100)
+            box.back.tabbed, box.back.tab_info = fixTabBits(box.back.tabbed, box.back.tab_info, 0b0100)
+            box.front.tabbed, box.front.tab_info = fixTabBits(box.front.tabbed, box.front.tab_info, 0b0100)
+            box.right.tabbed=0
 
         # Layout positions are specified in a grid of rows and columns
         row0=(1,0,0,0)      # top row
@@ -649,27 +691,21 @@ class BoxMaker(inkex.Effect):
         # tabbed= <abcd> 0=no tabs 1=tabs on this side
         # (sides: a=top, b=right, c=bottom, d=left)
         # pieceType: 1=XY, 2=XZ, 3=ZY
-        top.face=1
-        base.face=1
-        front.face=2
-        back.face=2
-        left.face=3
-        right.face=3
 
         # note first two pieces in each set are the X-divider template and Y-divider template respectively
         pieces=[]
-        if   layout==1: # Diagramatic Layout
+        if   layout==Layout.DIAGRAMATIC.value:
             rr = deepcopy([row0, row1z, row2])
             cc = deepcopy([col0, col1z, col2xz, col3xzz])
-            pieces = setup_diagramatic_layout(cc, rr, X, Y, Z, top, base, left, right, front, back)
-        elif layout==2: # 3 Piece Layout
+            pieces = setup_diagramatic_layout(box, cc, rr, X, Y, Z)
+        elif layout==Layout.THREE_PIECE.value:
             rr = deepcopy([row0, row1y])
             cc = deepcopy([col0, col1z])
-            pieces = setup_3_piece_layout(cc, rr, X, Y, Z, top, base, left, right, front, back)
-        elif layout==3: # Inline(compact) Layout
+            pieces = setup_3_piece_layout(box, cc, rr, X, Y, Z)
+        elif layout==Layout.INLINE.value:
             rr = deepcopy([row0])
             cc = deepcopy([col0, col1x, col2xx, col3xxz, col4, col5])
-            pieces = setup_inline_layout(cc, rr, X, Y, Z, top, base, left, right, front, back)
+            pieces = setup_inline_layout(box, cc, rr, X, Y, Z)
 
         for idx, piece in enumerate(pieces): # generate and draw each piece of the box
             (xs,xx,xy,xz)=piece[0]
@@ -681,7 +717,11 @@ class BoxMaker(inkex.Effect):
             tabs=piece[4]
             a=tabs>>3&1; b=tabs>>2&1; c=tabs>>1&1; d=tabs&1 # extract tab status for each side
             tabbed=piece[5]
-            atabs=tabbed>>3&1; btabs=tabbed>>2&1; ctabs=tabbed>>1&1; dtabs=tabbed&1 # extract tabbed flag for each side
+            # extract tabbed flag for each side
+            atabs=tabbed>>3&1
+            btabs=tabbed>>2&1
+            ctabs=tabbed>>1&1
+            dtabs=tabbed&1
             xspacing=(X-thickness)/(divy+1)
             yspacing=(Y-thickness)/(divx+1)
             xholes = 1 if piece[6]<3 else 0
